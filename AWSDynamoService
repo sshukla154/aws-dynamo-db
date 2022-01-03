@@ -1,0 +1,101 @@
+package com.frontier.learning;
+/* Created by Seemant Shukla on 07/11/21 */
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.*;
+import software.amazon.awssdk.core.waiters.WaiterResponse;
+import software.amazon.awssdk.services.dynamodb.waiters.DynamoDbWaiter;
+
+import javax.annotation.PostConstruct;
+import java.util.ArrayList;
+import java.util.List;
+
+@Slf4j
+@Service
+public class AWSService {
+
+    @Autowired
+    AWSServiceConfig awsServiceConfig;
+
+    @PostConstruct
+    private void init() {
+    initDynamoDB();
+    }
+
+    public DynamoDbClient amazonDynamoDB() {
+        return awsServiceConfig.amazonDynamoDB();
+    }
+
+    private String getTableName() {
+        return awsServiceConfig.getPrefix() + "my-table";
+    }
+
+    private void initDynamoDB() {
+        ListTablesResponse tables = amazonDynamoDB().listTables();
+        if (!tables.tableNames().contains(getTableName())) {
+            try {
+                createMultiChannelCommunicationTable(amazonDynamoDB(), getTableName());
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        } else {
+            log.info("{} table already exist", getTableName());
+        }
+
+        log.info("Existing tables list {}", amazonDynamoDB().listTables().tableNames());
+    }
+
+    private String createMultiChannelCommunicationTable(DynamoDbClient ddb, String tableName) throws Exception {
+        log.info("AWSService.createMultiChannelCommunicationTable : {} table creation started", tableName);
+
+        DynamoDbWaiter dbWaiter = ddb.waiter();
+
+        List<AttributeDefinition> attributeDefinitions = new ArrayList<>();
+        attributeDefinitions.add(AttributeDefinition.builder()
+                .attributeName("pk")
+                .attributeType("S")
+                .build());
+        attributeDefinitions.add(AttributeDefinition.builder()
+                .attributeName("sk")
+                .attributeType("S")
+                .build());
+
+        List<KeySchemaElement> keySchema = new ArrayList<KeySchemaElement>();
+        keySchema.add(KeySchemaElement.builder()
+                .attributeName("pk")
+                .keyType(KeyType.HASH)
+                .build());
+        keySchema.add(KeySchemaElement.builder()
+                .attributeName("sk")
+                .keyType(KeyType.RANGE)
+                .build());
+
+        CreateTableRequest request = CreateTableRequest.builder()
+                .tableName(tableName)
+                .keySchema(keySchema)
+                .attributeDefinitions(attributeDefinitions)
+                .billingMode(BillingMode.PAY_PER_REQUEST)
+                .build();
+
+        try {
+            CreateTableResponse response = ddb.createTable(request);
+            DescribeTableRequest tableRequest = DescribeTableRequest.builder()
+                    .tableName(tableName)
+                    .build();
+
+            // Wait until the Amazon DynamoDB table is created
+            WaiterResponse<DescribeTableResponse> waiterResponse =  dbWaiter.waitUntilTableExists(tableRequest);
+            waiterResponse.matched().response().ifPresent(x -> log.info("Wait Completed For Table Creation : {}" + x));
+            log.info("Created Table for {} with table status {}", getTableName(), response.tableDescription().tableStatus());
+
+            return response.tableDescription().tableName();
+
+        } catch (DynamoDbException e) {
+            throw new Exception("Exception occurred while creating table" + e.getMessage());
+        }
+    }
+
+}
